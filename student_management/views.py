@@ -1,127 +1,125 @@
-from django.shortcuts import render,HttpResponse, redirect,HttpResponseRedirect 
-from django.contrib.auth import logout, authenticate, login 
-from .models import CustomUser, Staffs, Students, AdminHOD 
-from django.contrib import messages 
+import json
+import requests
+from django.contrib import messages
+from django.contrib.auth import authenticate, login, logout
+from django.http import HttpResponse, JsonResponse
+from django.shortcuts import get_object_or_404, redirect, render, reverse
+from django.views.decorators.csrf import csrf_exempt
 
-def home(request): 
-	return render(request, 'home.html') 
+from .EmailBackend import EmailBackend
+from .models import Attendance, Session, Subject
 
+# Create your views here.
 
-def contact(request): 
-	return render(request, 'contact.html') 
-
-
-def loginUser(request): 
-	return render(request, 'login_page.html') 
-
-def doLogin(request): 
-	
-	print("here") 
-	email_id = request.GET.get('email') 
-	password = request.GET.get('password') 
-	# user_type = request.GET.get('user_type') 
-	print(email_id) 
-	print(password) 
-	print(request.user) 
-	if not (email_id and password): 
-		messages.error(request, "Please provide all the details!!") 
-		return render(request, 'login_page.html') 
-
-	user = CustomUser.objects.filter(email=email_id, password=password).last() 
-	if not user: 
-		messages.error(request, 'Invalid Login Credentials!!') 
-		return render(request, 'login_page.html') 
-
-	login(request, user) 
-	print(request.user) 
-
-	if user.user_type == CustomUser.STUDENT: 
-		return redirect('student_home/') 
-	elif user.user_type == CustomUser.STAFF: 
-		return redirect('staff_home/') 
-	elif user.user_type == CustomUser.HOD: 
-		return redirect('admin_home/') 
-
-	return render(request, 'home.html') 
-
-	
-def registration(request): 
-	return render(request, 'registration.html') 
-	
-
-def doRegistration(request): 
-	first_name = request.GET.get('first_name') 
-	last_name = request.GET.get('last_name') 
-	email_id = request.GET.get('email') 
-	password = request.GET.get('password') 
-	confirm_password = request.GET.get('confirmPassword') 
-
-	print(email_id) 
-	print(password) 
-	print(confirm_password) 
-	print(first_name) 
-	print(last_name) 
-	if not (email_id and password and confirm_password): 
-		messages.error(request, 'Please provide all the details!!') 
-		return render(request, 'registration.html') 
-	
-	if password != confirm_password: 
-		messages.error(request, 'Both passwords should match!!') 
-		return render(request, 'registration.html') 
-
-	is_user_exists = CustomUser.objects.filter(email=email_id).exists() 
-
-	if is_user_exists: 
-		messages.error(request, 'User with this email id already exists. Please proceed to login!!') 
-		return render(request, 'registration.html') 
-
-	user_type = get_user_type_from_email(email_id) 
-
-	if user_type is None: 
-		messages.error(request, "Please use valid format for the email id: '<username>.<staff|student|hod>@<college_domain>'") 
-		return render(request, 'registration.html') 
-
-	username = email_id.split('@')[0].split('.')[0] 
-
-	if CustomUser.objects.filter(username=username).exists(): 
-		messages.error(request, 'User with this username already exists. Please use different username') 
-		return render(request, 'registration.html') 
-
-	user = CustomUser() 
-	user.username = username 
-	user.email = email_id 
-	user.password = password 
-	user.user_type = user_type 
-	user.first_name = first_name 
-	user.last_name = last_name 
-	user.save() 
-	
-	if user_type == CustomUser.STAFF: 
-		Staffs.objects.create(admin=user) 
-	elif user_type == CustomUser.STUDENT: 
-		Students.objects.create(admin=user) 
-	elif user_type == CustomUser.HOD: 
-		AdminHOD.objects.create(admin=user) 
-	return render(request, 'login_page.html') 
-
-	
-def logout_user(request): 
-	logout(request) 
-	return HttpResponseRedirect('/') 
+def login_page(request):
+    if request.user.is_authenticated:
+        if request.user.user_type == '1':
+            return redirect(reverse("admin_home"))
+        elif request.user.user_type == '2':
+            return redirect(reverse("staff_home"))
+        else:
+            return redirect(reverse("student_home"))
+    return render(request, 'main_app/login.html')
 
 
-def get_user_type_from_email(email_id): 
-	""" 
-	Returns CustomUser.user_type corresponding to the given email address 
-	email_id should be in following format: 
-	'<username>.<staff|student|hod>@<college_domain>' 
-	eg.: 'abhishek.staff@jecrc.com' 
-	"""
+def doLogin(request, **kwargs):
+    if request.method != 'POST':
+        return HttpResponse("<h4>Denied</h4>")
+    
+    # Google reCAPTCHA
+    captcha_token = request.POST.get('g-recaptcha-response')
+    captcha_url = "https://www.google.com/recaptcha/api/siteverify"
+    captcha_key = "6LfswtgZAAAAABX9gbLqe-d97qE2g1JP8oUYritJ"
+    data = {
+        'secret': captcha_key,
+        'response': captcha_token
+    }
+    
+    # Make request
+    try:
+        captcha_server = requests.post(url=captcha_url, data=data)
+        response = json.loads(captcha_server.text)
+        if not response['success']:
+            messages.error(request, 'Invalid Captcha. Try Again')
+            return redirect('/')
+    except:
+        messages.error(request, 'Captcha could not be verified. Try Again')
+        return redirect('/')
+    
+    # Authenticate
+    user = EmailBackend.authenticate(request, username=request.POST.get('email'), password=request.POST.get('password'))
+    if user is not None:
+        login(request, user)
+        if user.user_type == '1':
+            return redirect(reverse("admin_home"))
+        elif user.user_type == '2':
+            return redirect(reverse("staff_home"))
+        else:
+            return redirect(reverse("student_home"))
+    else:
+        messages.error(request, "Invalid details")
+        return redirect("/")
 
-	try: 
-		email_id = email_id.split('@')[0] 
-		email_user_type = email_id.split('.')[1] 
-		return CustomUser.EMAIL_TO_USER_TYPE_MAP[email_user_type] 
-	except: 
-		return None
 
+def logout_user(request):
+    if request.user is not None:
+        logout(request)
+    return redirect("/")
+
+
+@csrf_exempt
+def get_attendance(request):
+    subject_id = request.POST.get('subject')
+    session_id = request.POST.get('session')
+    try:
+        subject = get_object_or_404(Subject, id=subject_id)
+        session = get_object_or_404(Session, id=session_id)
+        attendance = Attendance.objects.filter(subject=subject, session=session)
+        attendance_list = []
+        for attd in attendance:
+            data = {
+                "id": attd.id,
+                "attendance_date": str(attd.date),
+                "session": attd.session.id
+            }
+            attendance_list.append(data)
+        return JsonResponse(attendance_list, safe=False)
+    except Exception as e:
+        return JsonResponse({'error': str(e)}, status=400)
+
+
+def showFirebaseJS(request):
+    data = """
+    // Give the service worker access to Firebase Messaging.
+    // Note that you can only use Firebase Messaging here, other Firebase libraries
+    // are not available in the service worker.
+    importScripts('https://www.gstatic.com/firebasejs/7.22.1/firebase-app.js');
+    importScripts('https://www.gstatic.com/firebasejs/7.22.1/firebase-messaging.js');
+
+    // Initialize the Firebase app in the service worker by passing in
+    // your app's Firebase config object.
+    // https://firebase.google.com/docs/web/setup#config-object
+    firebase.initializeApp({
+        apiKey: "AIzaSyBarDWWHTfTMSrtc5Lj3Cdw5dEvjAkFwtM",
+        authDomain: "sms-with-django.firebaseapp.com",
+        databaseURL: "https://sms-with-django.firebaseio.com",
+        projectId: "sms-with-django",
+        storageBucket: "sms-with-django.appspot.com",
+        messagingSenderId: "945324593139",
+        appId: "1:945324593139:web:03fa99a8854bbd38420c86",
+        measurementId: "G-2F2RXTL9GT"
+    });
+
+    // Retrieve an instance of Firebase Messaging so that it can handle background
+    // messages.
+    const messaging = firebase.messaging();
+    messaging.setBackgroundMessageHandler(function (payload) {
+        const notification = JSON.parse(payload);
+        const notificationOption = {
+            body: notification.body,
+            icon: notification.icon
+        }
+        return self.registration.showNotification(payload.notification.title, notificationOption);
+    });
+    """
+    return HttpResponse(data, content_type='application/javascript')
